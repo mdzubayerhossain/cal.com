@@ -1,5 +1,4 @@
 import { useCallback, useState } from "react";
-
 import { sdkActionManager } from "@calcom/embed-core/embed-iframe";
 import { useLocale } from "@calcom/lib/hooks/useLocale";
 import { useRefreshData } from "@calcom/lib/hooks/useRefreshData";
@@ -36,27 +35,72 @@ type Props = {
 };
 
 export default function CancelBooking(props: Props) {
+  const {
+    booking,
+    allRemainingBookings,
+    setIsCancellationMode,
+    seatReferenceUid,
+    bookingCancelledEventProps,
+    currentUserEmail,
+  } = props;
+
   const [cancellationReason, setCancellationReason] = useState<string>("");
   const { t } = useLocale();
   const refreshData = useRefreshData();
-  const { booking, allRemainingBookings, seatReferenceUid, bookingCancelledEventProps, currentUserEmail } =
-    props;
-  const [loading, setLoading] = useState(false);
   const telemetry = useTelemetry();
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(booking ? null : t("booking_already_cancelled"));
 
   const cancelBookingRef = useCallback((node: HTMLTextAreaElement) => {
     if (node !== null) {
-      // eslint-disable-next-line @calcom/eslint/no-scroll-into-view-embed -- CancelBooking is not usually used in embed mode
       node.scrollIntoView({ behavior: "smooth" });
       node.focus();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleCancellation = async () => {
+    setLoading(true);
+    try {
+      telemetry.event(telemetryEventTypes.bookingCancelled, collectPageParameters());
+
+      const res = await fetch("/api/cancel", {
+        body: JSON.stringify({
+          uid: booking?.uid,
+          cancellationReason,
+          allRemainingBookings,
+          seatReferenceUid,
+          cancelledBy: currentUserEmail,
+        }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+      });
+
+      if (!res.ok) {
+        throw new Error(`${t("error_with_status_code_occured", { status: res.status })}`);
+      }
+
+      const bookingWithCancellationReason = {
+        ...(bookingCancelledEventProps.booking as object),
+        cancellationReason,
+      } as unknown;
+
+      sdkActionManager?.fire("bookingCancelled", {
+        ...bookingCancelledEventProps,
+        booking: bookingWithCancellationReason,
+      });
+      refreshData();
+    } catch (error) {
+      setError(error.message || t("please_try_again"));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <>
-      {error && (
+      {error ? (
         <div className="mt-8">
           <div className="bg-error mx-auto flex h-12 w-12 items-center justify-center rounded-full">
             <Icon name="x" className="h-6 w-6 text-red-600" />
@@ -67,72 +111,38 @@ export default function CancelBooking(props: Props) {
             </h3>
           </div>
         </div>
-      )}
-      {!error && (
+      ) : (
         <div className="mt-5 sm:mt-6">
-          <label className="text-default font-medium">{t("cancellation_reason")}</label>
+          <label htmlFor="cancellationReason" className="text-default font-medium">
+            {t("cancellation_reason")}
+          </label>
           <TextArea
+            id="cancellationReason"
             data-testid="cancel_reason"
             ref={cancelBookingRef}
             placeholder={t("cancellation_reason_placeholder")}
             value={cancellationReason}
             onChange={(e) => setCancellationReason(e.target.value)}
-            className="mb-4 mt-2 w-full "
+            className="mb-4 mt-2 w-full"
             rows={3}
           />
-          <div className="flex flex-col-reverse rtl:space-x-reverse ">
-            <div className="ml-auto flex w-full space-x-4 ">
+          <div className="flex flex-col-reverse rtl:space-x-reverse">
+            <div className="ml-auto flex w-full space-x-4">
               <Button
-                className="ml-auto"
+                aria-label="Cancel and go back"
                 color="secondary"
-                onClick={() => props.setIsCancellationMode(false)}>
+                onClick={() => setIsCancellationMode(false)}
+              >
                 {t("nevermind")}
               </Button>
               <Button
+                aria-label="Confirm cancellation"
                 data-testid="confirm_cancel"
-                onClick={async () => {
-                  setLoading(true);
-
-                  telemetry.event(telemetryEventTypes.bookingCancelled, collectPageParameters());
-
-                  const res = await fetch("/api/cancel", {
-                    body: JSON.stringify({
-                      uid: booking?.uid,
-                      cancellationReason: cancellationReason,
-                      allRemainingBookings,
-                      // @NOTE: very important this shouldn't cancel with number ID use uid instead
-                      seatReferenceUid,
-                      cancelledBy: currentUserEmail,
-                    }),
-                    headers: {
-                      "Content-Type": "application/json",
-                    },
-                    method: "POST",
-                  });
-
-                  const bookingWithCancellationReason = {
-                    ...(bookingCancelledEventProps.booking as object),
-                    cancellationReason,
-                  } as unknown;
-
-                  if (res.status >= 200 && res.status < 300) {
-                    // tested by apps/web/playwright/booking-pages.e2e.ts
-                    sdkActionManager?.fire("bookingCancelled", {
-                      ...bookingCancelledEventProps,
-                      booking: bookingWithCancellationReason,
-                    });
-                    refreshData();
-                  } else {
-                    setLoading(false);
-                    setError(
-                      `${t("error_with_status_code_occured", { status: res.status })} ${t(
-                        "please_try_again"
-                      )}`
-                    );
-                  }
-                }}
-                loading={loading}>
-                {props.allRemainingBookings ? t("cancel_all_remaining") : t("cancel_event")}
+                disabled={loading}
+                onClick={handleCancellation}
+                loading={loading}
+              >
+                {allRemainingBookings ? t("cancel_all_remaining") : t("cancel_event")}
               </Button>
             </div>
           </div>
